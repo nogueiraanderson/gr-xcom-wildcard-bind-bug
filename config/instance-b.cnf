@@ -1,0 +1,31 @@
+[mysqld]
+# =============================================================
+# Instance B  (Group B - bootstrap node)
+# Self-contained config for --defaults-file usage
+# =============================================================
+
+# --- Include shared GR base ---
+!include /etc/mysql/conf.d/custom/base.cnf
+
+# --- Identity ---
+server_id                        = 2
+report_host                      = 172.30.2.10
+
+# --- Networking ---
+port                             = 3307
+bind_address                     = 172.30.2.10
+
+# --- Paths ---
+datadir                          = /var/lib/mysql-b
+socket                           = /var/run/mysqld/mysqld-b.sock
+pid_file                         = /var/run/mysqld/mysqld-b.pid
+log_error                        = /var/log/mysql/error-b.log
+
+# --- Group Replication (Group B) ---
+# NOTE: Same GR port (33061) as Instance A - this is the bug trigger.
+# Both instances listen on 33061 but on different IPs (172.30.1.10 vs 172.30.2.10).
+# XCOM may still bind 0.0.0.0:33061 regardless of group_replication_local_address,
+# causing the second instance to fail with "address already in use".
+group_replication_group_name     = bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb
+group_replication_local_address  = 172.30.2.10:33061
+group_replication_group_seeds    = 172.30.2.10:33061

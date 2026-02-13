@@ -1,0 +1,179 @@
+diff --git a/plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_xcom_control_interface.cc b/plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_xcom_control_interface.cc
+index a46fdcef..9c94a62d 100644
+--- a/plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_xcom_control_interface.cc
++++ b/plugin/group_replication/libmysqlgcs/src/bindings/xcom/gcs_xcom_control_interface.cc
+@@ -1884,6 +1884,7 @@ void Gcs_xcom_control::set_node_address(
+ 
+   Network_configuration_parameters params;
+   params.port = xcom_node_address->get_member_port();
++  params.hostname = xcom_node_address->get_member_ip();
+   m_comms_operation_interface->configure_active_provider(params);
+ }
+ 
+diff --git a/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/include/network_provider.h b/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/include/network_provider.h
+index e551fdaf..448cce5e 100644
+--- a/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/include/network_provider.h
++++ b/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/include/network_provider.h
+@@ -190,6 +190,7 @@ struct tls_parameters {
+  */
+ struct Network_configuration_parameters {
+   unsigned short port;
++  std::string hostname;
+ 
+   struct ssl_parameters ssl_params;
+   struct tls_parameters tls_params;
+diff --git a/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider.cc b/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider.cc
+index 05750804..dc4cbe66 100644
+--- a/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider.cc
++++ b/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider.cc
+@@ -43,9 +43,10 @@ extern unsigned long xcom_ssl_socket_timeout;
+ 
+ void xcom_tcp_server_startup(Xcom_network_provider *net_provider) {
+   xcom_port port = net_provider->get_port();
++  const std::string &hostname = net_provider->get_hostname();
+ 
+   result tcp_fd = {0, 0};
+-  tcp_fd = Xcom_network_provider_library::announce_tcp(port);
++  tcp_fd = Xcom_network_provider_library::announce_tcp(port, hostname);
+   if (tcp_fd.val < 0) {
+     g_critical("Unable to announce tcp port %d. Port already in use?", port);
+     net_provider->notify_provider_ready(true);
+diff --git a/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider.h b/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider.h
+index 58d97c8d..b5d237d0 100644
+--- a/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider.h
++++ b/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider.h
+@@ -47,7 +47,8 @@ class Xcom_network_provider : public Network_provider {
+    * @brief Construct a new Xcom_network_provider object
+    */
+   Xcom_network_provider()
+-      : m_port(0),
++      : m_hostname(),
++        m_port(0),
+         m_initialized(false),
+         m_init_error(false),
+         m_shutdown_tcp_server(false),
+@@ -74,6 +75,7 @@ class Xcom_network_provider : public Network_provider {
+    */
+   bool configure(const Network_configuration_parameters &params) override {
+     m_port = params.port;
++    m_hostname = params.hostname;
+ 
+     return true;
+   }
+@@ -129,6 +131,8 @@ class Xcom_network_provider : public Network_provider {
+   xcom_port get_port() const { return m_port; }
+   void set_port(xcom_port port) { m_port = port; }
+ 
++  const std::string &get_hostname() const { return m_hostname; }
++
+   bool is_provider_initialized() const {
+     std::lock_guard<std::mutex> lck(m_init_lock);
+     return m_initialized;
+@@ -145,6 +149,7 @@ class Xcom_network_provider : public Network_provider {
+   }
+ 
+  private:
++  std::string m_hostname;
+   xcom_port m_port;
+   std::thread m_network_provider_tcp_server;
+ 
+diff --git a/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider_native_lib.cc b/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider_native_lib.cc
+index 604c134c..39aed322 100644
+--- a/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider_native_lib.cc
++++ b/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider_native_lib.cc
+@@ -78,7 +78,7 @@ int set_xcom_socket_accept_cb(xcom_socket_accept_cb x) {
+  */
+ void Xcom_network_provider_library::init_server_addr(
+     struct sockaddr **sock_addr, socklen_t *sock_len, xcom_port port,
+-    int family) {
++    int family, const std::string &hostname) {
+   struct addrinfo *address_info = nullptr, hints, *address_info_loop;
+   memset(&hints, 0, sizeof(hints));
+ 
+@@ -86,7 +86,8 @@ void Xcom_network_provider_library::init_server_addr(
+   hints.ai_protocol = IPPROTO_TCP;
+   hints.ai_family = AF_UNSPEC;
+   hints.ai_socktype = SOCK_STREAM;  // TCP stream sockets
+-  checked_getaddrinfo_port(nullptr, port, &hints, &address_info);
++  const char *node = hostname.empty() ? nullptr : hostname.c_str();
++  checked_getaddrinfo_port(node, port, &hints, &address_info);
+ 
+   address_info_loop = address_info;
+   while (address_info_loop) {
+@@ -250,7 +251,8 @@ result Xcom_network_provider_library::create_server_socket_v4() {
+ }
+ /* purecov: end */
+ 
+-result Xcom_network_provider_library::announce_tcp(xcom_port port) {
++result Xcom_network_provider_library::announce_tcp(xcom_port port,
++                                                    const std::string &hostname) {
+   result fd;
+   struct sockaddr *sock_addr = nullptr;
+   socklen_t sock_addr_len;
+@@ -276,7 +278,7 @@ result Xcom_network_provider_library::announce_tcp(xcom_port port) {
+     server_socket_v6_ok = 1;
+   }
+   init_server_addr(&sock_addr, &sock_addr_len, port,
+-                   server_socket_v6_ok ? AF_INET6 : AF_INET);
++                   server_socket_v6_ok ? AF_INET6 : AF_INET, hostname);
+   if (sock_addr == nullptr || (bind(fd.val, sock_addr, sock_addr_len) < 0)) {
+     // If we fail to bind to the desired address, we fall back to an
+     // IPv4 socket.
+@@ -289,10 +291,11 @@ result Xcom_network_provider_library::announce_tcp(xcom_port port) {
+       return fd;
+     }
+ 
+-    init_server_addr(&sock_addr, &sock_addr_len, port, AF_INET);
++    init_server_addr(&sock_addr, &sock_addr_len, port, AF_INET, hostname);
+     if (bind(fd.val, sock_addr, sock_addr_len) < 0) {
+       int err = to_errno(GET_OS_ERR);
+-      G_MESSAGE("Unable to bind to INADDR_ANY:%d (socket=%d, errno=%d)!", port,
++      G_MESSAGE("Unable to bind to %s:%d (socket=%d, errno=%d)!",
++                hostname.empty() ? "INADDR_ANY" : hostname.c_str(), port,
+                 fd.val, err);
+       fd.val = -1;
+       goto err;
+@@ -300,8 +303,8 @@ result Xcom_network_provider_library::announce_tcp(xcom_port port) {
+     /* purecov: end */
+   }
+ 
+-  G_DEBUG("Successfully bound to %s:%d (socket=%d).", "INADDR_ANY", port,
+-          fd.val);
++  G_DEBUG("Successfully bound to %s:%d (socket=%d).",
++          hostname.empty() ? "INADDR_ANY" : hostname.c_str(), port, fd.val);
+   if (listen(fd.val, 32) < 0) {
+     G_MESSAGE(
+         "Unable to listen backlog to 32. "
+diff --git a/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider_native_lib.h b/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider_native_lib.h
+index 57e7a069..b3ac76ca 100644
+--- a/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider_native_lib.h
++++ b/plugin/group_replication/libmysqlgcs/src/bindings/xcom/xcom/network/xcom_network_provider_native_lib.h
+@@ -27,6 +27,8 @@
+ #include "xcom/result.h"
+ #include "xcom/site_def.h"
+ 
++#include <string>
++
+ #ifndef XCOM_WITHOUT_OPENSSL
+ #ifdef _WIN32
+ /* In OpenSSL before 1.1.0, we need this first. */
+@@ -52,7 +54,8 @@ class Xcom_network_provider_library {
+                                 socklen_t sock_size, int timeout);
+   static int allowlist_socket_accept(int fd, site_def const *xcom_config);
+   static result gcs_shut_close_socket(int *sock);
+-  static result announce_tcp(xcom_port port);
++  static result announce_tcp(xcom_port port,
++                              const std::string &hostname = std::string());
+ 
+   /**
+    * @brief Auxiliary method used in Synchronous connects in order to poll a
+@@ -81,7 +84,8 @@ class Xcom_network_provider_library {
+ 
+  private:
+   static void init_server_addr(struct sockaddr **sock_addr, socklen_t *sock_len,
+-                               xcom_port port, int family);
++                               xcom_port port, int family,
++                               const std::string &hostname = std::string());
+   static result xcom_checked_socket(int domain, int type, int protocol);
+   static result create_server_socket();
+   static result create_server_socket_v4();

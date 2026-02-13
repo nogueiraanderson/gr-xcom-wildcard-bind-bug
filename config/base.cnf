@@ -1,0 +1,40 @@
+[mysqld]
+# =============================================================
+# Shared Group Replication prerequisites for MySQL 8.4
+# Include this file from instance-specific configs via:
+#   !include /etc/mysql/conf.d/custom/base.cnf
+# =============================================================
+
+# --- GTID ---
+gtid_mode                        = ON
+enforce_gtid_consistency         = ON
+
+# --- Binary Logging ---
+log_bin                          = binlog
+binlog_format                    = ROW
+binlog_checksum                  = NONE
+log_replica_updates              = ON
+relay_log                        = relay-bin
+
+# --- Group Replication Plugin ---
+plugin_load_add                  = group_replication.so
+disabled_storage_engines         = "MyISAM,BLACKHOLE,FEDERATED,ARCHIVE,MEMORY"
+
+# --- GR Tuning ---
+group_replication_single_primary_mode       = ON
+group_replication_start_on_boot             = OFF
+group_replication_bootstrap_group           = OFF
+group_replication_communication_stack       = XCOM
+group_replication_recovery_get_public_key   = ON
+
+# --- Container-friendly ---
+skip_name_resolve                = ON
+log_error_verbosity              = 3
+
+# --- Replication user auth (caching_sha2_password) ---
+# The replication user needs REPLICATION SLAVE and
+# GROUP_REPLICATION_STREAM. We create it in bootstrap scripts.
+
+# --- Performance / safety defaults ---
+# transaction_write_set_extraction was removed in MySQL 8.2+
+# Not needed in 8.4 (default algorithm is XXHASH64)

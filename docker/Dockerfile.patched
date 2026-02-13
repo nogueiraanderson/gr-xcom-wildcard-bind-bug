@@ -1,0 +1,93 @@
+# Multi-stage build: compile patched group_replication.so from source
+# Stage 1: Build the plugin on OracleLinux 9 with gcc-toolset-13
+# Stage 2: Drop the .so into the existing test image
+#
+# Usage: docker build -f docker/Dockerfile.patched -t gr-bind-lab:patched .
+# Build time: ~10-15 min first run (m3, 12 cores), ~2-3 min on cache hit
+
+# ─── Stage 1: Builder ────────────────────────────────────────────────
+FROM oraclelinux:9 AS builder
+
+# Install build dependencies
+# gcc-toolset-13 provides a modern GCC matching Percona's build environment
+# rpcgen is needed by libmysqlgcs CMakeLists.txt for XDR compilation
+# CRB repo required for libtirpc-devel and rpcsvc-proto on OL9
+RUN dnf install -y oracle-epel-release-el9 \
+    && dnf config-manager --set-enabled ol9_codeready_builder \
+    && dnf install -y \
+        gcc-toolset-13 \
+        gcc-toolset-13-gcc-c++ \
+        cmake \
+        make \
+        git \
+        perl \
+        python3 \
+        which \
+        tar \
+        gzip \
+        bison \
+        openssl-devel \
+        ncurses-devel \
+        libtirpc-devel \
+        rpcgen \
+        openldap-devel \
+        cyrus-sasl-devel \
+        cyrus-sasl-scram \
+        libcurl-devel \
+    && dnf clean all
+
+# Enable gcc-toolset-13 for the rest of the build
+ENV PATH="/opt/rh/gcc-toolset-13/root/usr/bin:${PATH}" \
+    LD_LIBRARY_PATH="/opt/rh/gcc-toolset-13/root/usr/lib64:${LD_LIBRARY_PATH:-}"
+
+WORKDIR /build
+
+# Clone percona-server (shallow, no submodules needed for GR plugin)
+RUN git clone --depth 1 --branch Percona-Server-8.4.7-7 \
+        https://github.com/percona/percona-server.git src
+
+# Copy and apply the patch
+COPY patches/xcom-bind-hostname.patch /build/patch.diff
+RUN cd src && git apply /build/patch.diff
+
+# Configure cmake with minimal feature set
+# Key flags:
+#   -DWITH_ROCKSDB=OFF      Skip RocksDB (submodule not cloned)
+#   -DWITH_ROUTER=OFF       Skip MySQL Router
+#   -DWITH_UNIT_TESTS=OFF   Skip test binaries
+#   -DWITH_PAM=OFF          Skip PAM authentication plugin
+#   -DWITH_KERBEROS=none    Skip Kerberos authentication plugin
+#   -DWITH_MAN_PAGES=OFF    Skip man page generation
+#   -DWITH_COREDUMPER=OFF   Skip coredumper (submodule not cloned)
+#   -DWITHOUT_COMPONENT_KEYRING_KMIP=1  Skip KMIP (submodule not cloned)
+#   -DDOWNLOAD_BOOST=1      Auto-download Boost headers
+# Percona's CMakeLists.txt expects gcc-toolset-12 by default.
+# We use gcc-toolset-13 and pass the compiler paths explicitly.
+RUN cmake -S src -B build \
+        -DCMAKE_C_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/gcc \
+        -DCMAKE_CXX_COMPILER=/opt/rh/gcc-toolset-13/root/usr/bin/g++ \
+        -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+        -DWITH_ROCKSDB=OFF \
+        -DWITH_ROUTER=OFF \
+        -DWITH_UNIT_TESTS=OFF \
+        -DWITH_PAM=OFF \
+        -DWITH_KERBEROS=none \
+        -DWITH_MAN_PAGES=OFF \
+        -DWITH_COREDUMPER=OFF \
+        -DWITHOUT_COMPONENT_KEYRING_KMIP=1 \
+        -DDOWNLOAD_BOOST=1 \
+        -DWITH_BOOST=/build/boost
+
+# Build only the group_replication plugin (+ its libmysqlgcs dependency)
+RUN cmake --build build --target group_replication -- -j$(nproc)
+
+# Verify the .so was produced
+RUN ls -lh build/plugin_output_directory/group_replication.so
+
+# ─── Stage 2: Runtime ────────────────────────────────────────────────
+# Start from the existing test image (has supervisord, configs, scripts)
+FROM docker-gr-bind-lab:latest
+
+# Replace the stock group_replication.so with our patched version
+COPY --from=builder /build/build/plugin_output_directory/group_replication.so \
+    /usr/lib64/mysql/plugin/group_replication.so

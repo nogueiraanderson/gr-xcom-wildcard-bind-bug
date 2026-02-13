@@ -1,0 +1,27 @@
+[mysqld]
+# =============================================================
+# Instance A  (Group A - bootstrap node)
+# Self-contained config for --defaults-file usage
+# =============================================================
+
+# --- Include shared GR base ---
+!include /etc/mysql/conf.d/custom/base.cnf
+
+# --- Identity ---
+server_id                        = 1
+report_host                      = 172.30.1.10
+
+# --- Networking ---
+port                             = 3306
+bind_address                     = 172.30.1.10
+
+# --- Paths ---
+datadir                          = /var/lib/mysql-a
+socket                           = /var/run/mysqld/mysqld-a.sock
+pid_file                         = /var/run/mysqld/mysqld-a.pid
+log_error                        = /var/log/mysql/error-a.log
+
+# --- Group Replication (Group A) ---
+group_replication_group_name     = aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa
+group_replication_local_address  = 172.30.1.10:33061
+group_replication_group_seeds    = 172.30.1.10:33061
